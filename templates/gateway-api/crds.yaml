@@ -1,0 +1,6 @@
+{{- if and .Values.gatewayAPI.enabled .Values.gatewayAPI.installCRDs }}
+{{- range $path, $bytes := .Files.Glob "crds/*.yaml" }}
+{{- $.Files.Get $path }}
+---
+{{- end }}
+{{- end }}

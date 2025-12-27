@@ -1,0 +1,137 @@
+========================================
+  MetalLB Gateway 安装完成！
+========================================
+
+感谢您安装 MetalLB Gateway。
+
+📦 安装的组件:
+  - MetalLB ({{ .Values.metallb.controller.image.tag }})
+  - Traefik ({{ .Values.traefik.image.tag }})
+  - Gateway API CRDs
+
+🔧 获取 LoadBalancer IP:
+
+MetalLB 已配置以下 IP 地址池:
+{{- range .Values.metallb.ipAddressPools }}
+  • {{ .name }}: {{ .addresses }}
+{{- end }}
+
+要创建一个 LoadBalancer 类型的服务，使用以下示例：
+
+  apiVersion: v1
+  kind: Service
+  metadata:
+    name: example-service
+  spec:
+    type: LoadBalancer
+    selector:
+      app: example
+    ports:
+      - port: 80
+        targetPort: 8080
+
+🌐 使用 Gateway API:
+
+Traefik GatewayClass 已安装，名称为: {{ .Release.Name }}-traefik
+
+创建 Gateway 示例：
+
+  apiVersion: gateway.networking.k8s.io/v1
+  kind: Gateway
+  metadata:
+    name: example-gateway
+  spec:
+    gatewayClassName: {{ .Release.Name }}-traefik
+    listeners:
+      - name: web
+        port: 80
+        protocol: HTTP
+
+📊 Traefik Dashboard:
+
+本地访问:
+  kubectl port-forward -n {{ include "metallb-gateway.namespace" . }} deployment/{{ .Release.Name }}-traefik 9000:9000
+  然后访问: http://localhost:9000/dashboard/
+
+通过 LoadBalancer 访问:
+  获取外部 IP: kubectl get svc -n {{ include "metallb-gateway.namespace" . }} {{ .Release.Name }}-traefik
+  访问: http://<EXTERNAL-IP>:9000/dashboard/
+
+⚙️ 配置文件:
+
+如需修改 IP 地址池或其他配置，编辑 values.yaml:
+
+  metallb:
+    ipAddressPools:
+      - name: default-pool
+        addresses:
+          - 192.168.1.100-192.168.1.200  # 修改为你的 IP 范围
+
+然后升级:
+  helm upgrade {{ .Release.Name }} . -f values.yaml
+
+📚 更多信息:
+
+  - MetalLB 文档: https://metallb.universe.tf/
+  - Traefik 文档: https://doc.traefik.io/traefik/
+  - Gateway API 文档: https://gateway-api.sigs.k8s.io/
+
+{{- if .Values.metallb.enabled }}
+💡 提示:
+
+MetalLB Speaker 正在运行。检查状态:
+
+  kubectl get pods -n {{ include "metallb-gateway.namespace" . }} | grep speaker
+  kubectl logs -n {{ include "metallb-gateway.namespace" . }} deployment/{{ .Release.Name }}-metallb-controller
+{{- end }}
+
+{{- if .Values.traefik.enabled }}
+🚀 快速开始:
+
+1. 创建一个测试应用:
+   kubectl create deployment test --image=nginx -n {{ include "metallb-gateway.namespace" . }}
+
+2. 暴露为 LoadBalancer:
+   kubectl expose deployment test --port=80 --type=LoadBalancer -n {{ include "metallb-gateway.namespace" . }}
+
+3. 获取外部 IP:
+   kubectl get svc test -n {{ include "metallb-gateway.namespace" . }}
+{{- end }}
+
+{{- if .Values.whoami.enabled }}
+✅ Whoami 示例应用已安装!
+
+🎯 验证 MetalLB (LoadBalancer):
+
+1. 获取 whoami 的外部 IP:
+   export WHOAMI_IP=$(kubectl get svc whoami -n {{ include "metallb-gateway.namespace" . }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+2. 访问应用 (多次调用可以看到不同 Pod 响应):
+   curl http://${WHOAMI_IP}/
+
+   或者使用浏览器访问: http://${WHOAMI_IP}/
+
+🌐 验证 Gateway API:
+
+1. 获取 Traefik Gateway 外部 IP:
+   export GATEWAY_IP=$(kubectl get svc -n {{ include "metallb-gateway.namespace" . }} {{ .Release.Name }}-traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+2. 配置本地 hosts 文件 (可选):
+   echo "${GATEWAY_IP} {{ .Values.whoami.gateway.host }}" | sudo tee -a /etc/hosts
+
+3. 通过 Gateway 访问:
+   curl -H "Host: {{ .Values.whoami.gateway.host }}" http://${GATEWAY_IP}/
+
+   或在浏览器中访问: http://{{ .Values.whoami.gateway.host }}/
+
+📊 查看示例应用状态:
+
+  kubectl get pods,svc,gateway,httproute -n {{ include "metallb-gateway.namespace" . }} | grep whoami
+
+🧹 清理示例应用:
+
+  helm upgrade {{ .Release.Name }} . --set whoami.enabled=false
+
+  或手动删除:
+  kubectl delete deployment,service,gateway,httproute -l app=whoami -n {{ include "metallb-gateway.namespace" . }}
+{{- end }}

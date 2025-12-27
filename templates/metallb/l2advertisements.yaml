@@ -1,0 +1,18 @@
+{{- if .Values.metallb.enabled }}
+{{- range .Values.metallb.l2Advertisements }}
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: {{ .name }}
+  namespace: {{ include "metallb-gateway.namespace" $ }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "100"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  {{- with .ipAddressPoolSelectors }}
+  ipAddressPoolSelectors: {{ . | toYaml | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

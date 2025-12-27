@@ -1,0 +1,330 @@
+# ==========================================
+# MetalLB Gateway - 离线安装配置
+# ==========================================
+# 本 chart 使用官方 MetalLB 和 Traefik charts 作为依赖，提供完整的离线安装支持
+#
+# 安装前请先运行: helm dependency update
+# ==========================================
+
+# 全局配置
+global:
+  # 全局镜像仓库地址（用于离线安装）
+  imageRegistry: ""
+
+  # 全局 imagePullSecrets（如果私有仓库需要认证）
+  imagePullSecrets: []
+  # - name: regcred
+
+# ==========================================
+# 命名空间配置
+# ==========================================
+namespaces:
+  create: true
+  metallb: metallb-system
+
+# ==========================================
+# Gateway API CRDs 配置
+# ==========================================
+gatewayAPI:
+  enabled: true
+  installCRDs: false  # 启用 Gateway API CRD 安装
+
+# ==========================================
+# MetalLB 配置
+# ==========================================
+metallb:
+  enabled: true
+  crds:
+    enabled: true  # MetalLB CRD 需要由 Helm 安装
+    validationFailurePolicy: Ignore  # webhook 未就绪时不阻止资源创建
+
+  # ==========================================
+  # MetalLB 镜像配置
+  # ==========================================
+  # Controller 镜像
+  controller:
+    enabled: true
+    image:
+      repository: quay.io/metallb/controller
+      tag: v0.15.3
+
+  # Speaker 镜像
+  speaker:
+    enabled: true
+    image:
+      repository: quay.io/metallb/speaker
+      tag: v0.15.3
+
+    # FRR 镜像（BGP 模式需要）
+    frr:
+      enabled: true
+      image:
+        repository: quay.io/frrouting/frr
+        tag: 10.4.1
+
+  # ==========================================
+  # MetalLB IP 地址池配置
+  # ==========================================
+  # 重要：根据你的网络环境修改 addresses
+  ipAddressPools:
+    - name: default-pool
+      protocol: layer2
+      addresses:
+        - 172.20.88.100-172.20.88.150
+      autoAssign: true
+
+  # L2 广播配置
+  l2Advertisements:
+    - name: default
+      ipAddressPoolSelectors:
+        - matchLabels:
+            metallb.io/address-pool: default-pool
+
+  # BGP 配置（如果使用 BGP 模式）
+  bgp:
+    peers: []
+    # - my-asn: 64500
+    #   peer-asn: 64501
+    #   peer-address: 10.0.0.1
+    #   source-address: 10.0.0.2
+
+  # Prometheus 监控（可选）
+  prometheus:
+    serviceMonitor:
+      enabled: false
+    podMonitor:
+      enabled: false
+    prometheusRule:
+      enabled: false
+
+# ==========================================
+# Traefik 配置
+# ==========================================
+traefik:
+  enabled: true
+
+  # ==========================================
+  # Traefik 镜像配置（v38.0.1）
+  # ==========================================
+  # 离线安装时，使用 ./scripts/generate-offline-values.sh 自动生成配置
+  image:
+    registry: docker.io
+    repository: traefik
+    tag: v3.6.5
+
+  # 部署配置
+  deployment:
+    enabled: true
+    replicas: 1
+
+  # ==========================================
+  # Gateway API 支持
+  # ==========================================
+  providers:
+    kubernetesGateway:
+      enabled: true
+    kubernetesIngress:
+      enabled: false  # 禁用 Ingress，只使用 GatewayAPI
+
+  # Gateway 配置
+  gateway:
+    enabled: true
+    listeners:
+      web:
+        port: 80
+        protocol: HTTP
+      # websecure:
+      #   port: 443
+      #   protocol: HTTPS
+      #   certificateRefs:
+      #       - name: my-tls-cert  # Kubernetes Secret 名称
+      #   mode: Terminate
+      traefik:
+        port: 9000
+        protocol: TCP
+
+  gatewayClass:
+    enabled: true
+
+  # ==========================================
+  # Dashboard 配置
+  # ==========================================
+  api:
+    dashboard: true
+    insecure: true
+
+  # ==========================================
+  # Service 配置
+  # ==========================================
+  service:
+    enabled: true
+    type: LoadBalancer
+    annotations: {}
+    labels: {}
+
+  # 端口配置
+  ports:
+    web:
+      port: 80
+      expose:
+        default: true
+      exposedPort: 80
+      protocol: TCP
+      # healthcarePort: 8080
+    # websecure:
+    #   port: 443
+    #   expose: 
+    #     default: true
+    #   exposedPort: 443
+    #   protocol: TCP
+      # tls:
+      #   enabled: true
+      #   certResolver: letsencrypt
+    traefik:
+      port: 9000
+      expose:
+        default: true
+      exposedPort: 9000
+      protocol: TCP
+
+  # ==========================================
+  # 日志配置
+  # ==========================================
+  logs:
+    general:
+      level: INFO
+    access:
+      enabled: true
+
+  # ==========================================
+  # 安全配置（允许绑定特权端口）
+  # ==========================================
+  securityContext:
+    capabilities:
+      add:
+        - NET_BIND_SERVICE
+    runAsNonRoot: false
+    runAsUser: 0
+
+  # ==========================================
+  # 额外的启动参数
+  # ==========================================
+  additionalArguments: []
+
+  # ==========================================
+  # 资源限制
+  # ==========================================
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "100Mi"
+    limits:
+      cpu: "500m"
+      memory: "200Mi"
+
+  # ==========================================
+  # 监控配置（可选）
+  # ==========================================
+  serviceMonitor:
+    enabled: false
+
+# ==========================================
+# Whoami 示例应用（用于验证）
+# ==========================================
+whoami:
+  enabled: true  # 设置为 true 启用示例应用
+
+  image:
+    registry: docker.io
+    repository: traefik/whoami
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  # Service 配置
+  service:
+    type: LoadBalancer  # 使用 LoadBalancer 测试 MetalLB
+    port: 80
+    targetPort: 80
+
+  # Deployment 配置
+  deployment:
+    replicas: 2
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "20Mi"
+      limits:
+        cpu: "100m"
+        memory: "50Mi"
+
+  # Gateway API 配置
+  gateway:
+    enabled: true  # 创建 Gateway 和 HTTPRoute
+    host: "whoami.local"  # 示例主机名
+
+
+# ==========================================
+# 常见配置示例（取消注释使用）
+# ==========================================
+
+# 离线安装配置
+# global:
+#   imageRegistry: "harbor.example.com"
+#   imagePullSecrets:
+#     - name: regcred
+
+# 使用 BGP 模式
+# metallb:
+#   ipAddressPools:
+#     - name: bgp-pool
+#       protocol: bgp
+#       addresses:
+#         - 10.0.100.0-10.0.100.255
+#   bgp:
+#     peers:
+#       - my-asn: 64500
+#         peer-asn: 64501
+#         peer-address: 192.168.1.1
+#         source-address: 192.168.1.2
+
+# 启用 Prometheus 监控
+# metallb:
+#   prometheus:
+#     serviceMonitor:
+#       enabled: true
+# traefik:
+#   serviceMonitor:
+#     enabled: true
+
+# 配置 HTTPS 和 Let's Encrypt
+# traefik:
+#   ports:
+#     websecure:
+#       tls:
+#         enabled: true
+#         certResolver: letsencrypt
+#   certificatesResolvers:
+#     letsencrypt:
+#       acme:
+#         email: your-email@example.com
+#         storage: /acme.json
+#         httpChallenge:
+#           entryPoint: web
+
+# 配置 TLS 通配符证书
+# traefik:
+#   ports:
+#     websecure:
+#       tls:
+#         enabled: true
+#         certResolver: cloudflare
+#   certificatesResolvers:
+#     cloudflare:
+#       acme:
+#         email: your-email@example.com
+#         storage: /acme.json
+#         dnsChallenge:
+#           provider: cloudflare
+#           resolvers:
+#             - "1.1.1.1"
+#             - "8.8.8.8"

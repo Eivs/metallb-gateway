@@ -1,0 +1,15 @@
+{{- if .Values.namespaces.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.metallb | default "metallb-system" }}
+  labels:
+    name: metallb-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.traefik | default "traefik-system" }}
+  labels:
+    name: traefik-system
+{{- end }}

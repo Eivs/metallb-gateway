@@ -1,0 +1,19 @@
+{{- if .Values.whoami.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: whoami
+  namespace: {{ include "metallb-gateway.namespace" . }}
+  labels:
+    app: whoami
+    app.kubernetes.io/part-of: metallb-gateway
+spec:
+  type: {{ .Values.whoami.service.type }}
+  ports:
+  - name: http
+    port: {{ .Values.whoami.service.port }}
+    targetPort: {{ .Values.whoami.service.targetPort }}
+    protocol: TCP
+  selector:
+    app: whoami
+{{- end }}

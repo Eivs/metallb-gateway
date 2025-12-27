@@ -1,0 +1,14 @@
+.git
+.gitignore
+.gitattributes
+
+*.md
+LICENSE
+README*
+
+.helmignore
+charts/*.tgz
+
+*.log
+*.tmp
+.DS_Store

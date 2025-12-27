@@ -1,0 +1,39 @@
+{{- if and .Values.whoami.enabled .Values.whoami.gateway.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: whoami-gateway
+  namespace: {{ include "metallb-gateway.namespace" . }}
+  labels:
+    app: whoami
+    app.kubernetes.io/part-of: metallb-gateway
+spec:
+  gatewayClassName: {{ .Release.Name }}-traefik
+  listeners:
+  - name: web
+    port: 80
+    protocol: HTTP
+    hostname: {{ .Values.whoami.gateway.host | quote }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: whoami-route
+  namespace: {{ include "metallb-gateway.namespace" . }}
+  labels:
+    app: whoami
+    app.kubernetes.io/part-of: metallb-gateway
+spec:
+  parentRefs:
+  - name: whoami-gateway
+  hostnames:
+  - {{ .Values.whoami.gateway.host | quote }}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: whoami
+      port: {{ .Values.whoami.service.port }}
+{{- end }}

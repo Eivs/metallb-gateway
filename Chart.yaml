@@ -1,0 +1,24 @@
+apiVersion: v2
+name: metallb-gateway
+description: A Helm chart to install Gateway API CRDs, MetalLB, and Traefik for Kubernetes ingress with offline support
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - gateway-api
+  - metallb
+  - traefik
+  - loadbalancer
+maintainers:
+  - name: qingcloud
+
+# 使用本地官方 charts 压缩包作为依赖，支持离线安装
+dependencies:
+  - name: metallb
+    version: 0.15.3
+    repository: "file://./charts/metallb-0.15.3.tgz"
+    condition: metallb.enabled
+  - name: traefik
+    version: 38.0.1
+    repository: "file://./charts/traefik-38.0.1.tgz"
+    condition: traefik.enabled
