@@ -12,13 +12,12 @@ keywords:
 maintainers:
   - name: qingcloud
 
-# 使用本地官方 charts 压缩包作为依赖，支持离线安装
 dependencies:
   - name: metallb
     version: 0.15.3
-    repository: "file://./charts/metallb-0.15.3.tgz"
+    repository: "file://./charts/metallb"
     condition: metallb.enabled
   - name: traefik
     version: 38.0.1
-    repository: "file://./charts/traefik-38.0.1.tgz"
+    repository: "file://./charts/traefik"
     condition: traefik.enabled

@@ -106,7 +106,7 @@ traefik:
   # ==========================================
   # Traefik 镜像配置（v38.0.1）
   # ==========================================
-  # 离线安装时，使用 ./scripts/generate-offline-values.sh 自动生成配置
+
   image:
     registry: docker.io
     repository: traefik
@@ -232,7 +232,7 @@ traefik:
 # Whoami 示例应用（用于验证）
 # ==========================================
 whoami:
-  enabled: true  # 设置为 true 启用示例应用
+  enabled: false  # 设置为 true 启用示例应用
 
   image:
     registry: docker.io
