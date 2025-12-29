@@ -1,7 +1,7 @@
 # ==========================================
 # MetalLB Gateway - 离线安装配置
 # ==========================================
-# 本 chart 使用官方 MetalLB 和 Traefik charts 作为依赖，提供完整的离线安装支持
+# 本 chart 使用官方 MetalLB 和 Envoy Gateway charts 作为依赖，提供完整的离线安装支持
 #
 # 安装前请先运行: helm dependency update
 # ==========================================
@@ -98,60 +98,44 @@ metallb:
       enabled: false
 
 # ==========================================
-# Traefik 配置
+# Envoy Gateway 配置
 # ==========================================
-traefik:
+envoyGateway:
   enabled: true
 
-  # ==========================================
-  # Traefik 镜像配置（v38.0.1）
-  # ==========================================
+  fullnameOverride: "envoy-gateway"
 
-  image:
-    registry: docker.io
-    repository: traefik
-    tag: v3.6.5
+  # ==========================================
+  # 镜像配置
+  # ==========================================
+  global:
+    imageRegistry: ""  # 全局镜像仓库（用于离线安装）
+    imagePullSecrets: []
 
+  images:
+    envoyGateway:
+      image: docker.io/envoyproxy/gateway-dev:latest
+      pullPolicy: Always
+      pullSecrets: []
+
+  # ==========================================
   # 部署配置
+  # ==========================================
   deployment:
-    enabled: true
     replicas: 1
-
-  # ==========================================
-  # Gateway API 支持
-  # ==========================================
-  providers:
-    kubernetesGateway:
-      enabled: true
-    kubernetesIngress:
-      enabled: false  # 禁用 Ingress，只使用 GatewayAPI
-
-  # Gateway 配置
-  gateway:
-    enabled: true
-    listeners:
-      web:
-        port: 80
-        protocol: HTTP
-      # websecure:
-      #   port: 443
-      #   protocol: HTTPS
-      #   certificateRefs:
-      #       - name: my-tls-cert  # Kubernetes Secret 名称
-      #   mode: Terminate
-      traefik:
-        port: 9000
-        protocol: TCP
-
-  gatewayClass:
-    enabled: true
-
-  # ==========================================
-  # Dashboard 配置
-  # ==========================================
-  api:
-    dashboard: true
-    insecure: true
+    envoyGateway:
+      image:
+        repository: ""  # 如果需要覆盖镜像仓库
+        tag: ""
+      imagePullPolicy: ""
+      imagePullSecrets: []
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "1024Mi"
 
   # ==========================================
   # Service 配置
@@ -162,77 +146,37 @@ traefik:
     annotations: {}
     labels: {}
 
-  # 端口配置
-  ports:
-    web:
-      port: 80
-      expose:
-        default: true
-      exposedPort: 80
-      protocol: TCP
-      # healthcarePort: 8080
-    # websecure:
-    #   port: 443
-    #   expose: 
-    #     default: true
-    #   exposedPort: 443
-    #   protocol: TCP
-      # tls:
-      #   enabled: true
-      #   certResolver: letsencrypt
-    traefik:
-      port: 9000
-      expose:
-        default: true
-      exposedPort: 9000
-      protocol: TCP
+  # ==========================================
+  # Envoy Gateway 配置
+  # ==========================================
+  config:
+    envoyGateway:
+      gateway:
+        controllerName: gateway.envoyproxy.io/gatewayclass-controller
+      provider:
+        type: Kubernetes
+      logging:
+        level:
+          default: info
 
   # ==========================================
-  # 日志配置
+  # 自动扩缩配置（可选）
   # ==========================================
-  logs:
-    general:
-      level: INFO
-    access:
-      enabled: true
-
-  # ==========================================
-  # 安全配置（允许绑定特权端口）
-  # ==========================================
-  securityContext:
-    capabilities:
-      add:
-        - NET_BIND_SERVICE
-    runAsNonRoot: false
-    runAsUser: 0
-
-  # ==========================================
-  # 额外的启动参数
-  # ==========================================
-  additionalArguments: []
-
-  # ==========================================
-  # 资源限制
-  # ==========================================
-  resources:
-    requests:
-      cpu: "100m"
-      memory: "100Mi"
-    limits:
-      cpu: "500m"
-      memory: "200Mi"
+  hpa:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
 
   # ==========================================
   # 监控配置（可选）
   # ==========================================
-  serviceMonitor:
-    enabled: false
+  #  Envoy Gateway 会自动暴露 metrics 端口 19001
 
 # ==========================================
 # Whoami 示例应用（用于验证）
 # ==========================================
 whoami:
-  enabled: false  # 设置为 true 启用示例应用
+  enabled: true  # 设置为 true 启用示例应用
 
   image:
     registry: docker.io
@@ -292,39 +236,25 @@ whoami:
 #   prometheus:
 #     serviceMonitor:
 #       enabled: true
-# traefik:
-#   serviceMonitor:
-#     enabled: true
 
-# 配置 HTTPS 和 Let's Encrypt
-# traefik:
-#   ports:
-#     websecure:
-#       tls:
-#         enabled: true
-#         certResolver: letsencrypt
-#   certificatesResolvers:
-#     letsencrypt:
-#       acme:
-#         email: your-email@example.com
-#         storage: /acme.json
-#         httpChallenge:
-#           entryPoint: web
+# Envoy Gateway 会自动暴露 metrics 端口 19001，可以使用 ServiceMonitor 收集
 
-# 配置 TLS 通配符证书
-# traefik:
-#   ports:
-#     websecure:
+# 配置 HTTPS/TLS
+# 在 Gateway 资源中配置证书引用:
+#
+# apiVersion: gateway.networking.k8s.io/v1
+# kind: Gateway
+# metadata:
+#   name: example-gateway
+# spec:
+#   gatewayClassName: eg
+#   listeners:
+#     - name: https
+#       protocol: HTTPS
+#       port: 443
+#       hostname: example.com
 #       tls:
-#         enabled: true
-#         certResolver: cloudflare
-#   certificatesResolvers:
-#     cloudflare:
-#       acme:
-#         email: your-email@example.com
-#         storage: /acme.json
-#         dnsChallenge:
-#           provider: cloudflare
-#           resolvers:
-#             - "1.1.1.1"
-#             - "8.8.8.8"
+#         mode: Terminate
+#         certificateRefs:
+#           - kind: Secret
+#             name: example-tls-cert

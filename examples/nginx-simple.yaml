@@ -1,0 +1,418 @@
+# ==========================================
+# Envoy Gateway 简化示例 - Nginx 服务
+# ==========================================
+# 此文件使用 Envoy Gateway 的正确 API 创建 Nginx 服务
+#
+# 架构说明：
+# - GatewayClass 通过 parametersRef 引用 EnvoyProxy 配置
+# - Gateway 使用 GatewayClass
+# - HTTPRoute 定义路由规则
+#
+# ==========================================
+
+---
+# ==========================================
+# Nginx 应用部署
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: metallb-system
+  labels:
+    app: nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 20
+
+---
+# ==========================================
+# Nginx Service
+# ==========================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: metallb-system
+  labels:
+    app: nginx
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+  selector:
+    app: nginx
+
+---
+# ==========================================
+# EnvoyProxy 配置
+# ==========================================
+# EnvoyProxy 定义数据平面的行为
+# 通过 GatewayClass 的 parametersRef 引用
+#
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: nginx-proxy-config
+  namespace: metallb-system
+spec:
+  # ==========================================
+  # 日志配置
+  # ==========================================
+  logging:
+    level:
+      default: info
+      # 各组件的日志级别
+      router: debug
+      connection: info
+      upstream: debug
+      http: info
+
+  # ==========================================
+  # Provider 配置
+  # ==========================================
+  provider:
+    type: Kubernetes
+
+    kubernetes:
+      # ==========================================
+      # Envoy Deployment 配置
+      # ==========================================
+      envoyDeployment:
+        # 副本数
+        replicas: 3
+
+        # ==========================================
+        # Pod 配置
+        # ==========================================
+        pod:
+          # 节点选择器 - 调度到 Worker 节点
+          nodeSelector:
+            node-role.kubernetes.io/worker: ""
+
+          # 容忍控制平面污点（反向逻辑）
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+
+          # Pod 反亲和性 - 分散到不同节点
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    labelSelector:
+                      matchExpressions:
+                        - key: gateway.envoyproxy.io/owning-gateway-name
+                          operator: In
+                          values:
+                            - nginx-gateway
+                    topologyKey: kubernetes.io/hostname
+
+          # 优先级
+          priorityClassName: system-cluster-critical
+
+          # Pod 安全上下文
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+
+        # ==========================================
+        # Container 配置
+        # ==========================================
+        container:
+          # 资源配置
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+
+          # 容器安全上下文
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+      # ==========================================
+      # Envoy Service 配置
+      # ==========================================
+      envoyService:
+        # Service 类型
+        type: LoadBalancer
+
+        # MetalLB 注解
+        annotations:
+          metallb.io/address-pool: default-pool
+
+        # 保留源 IP
+        # externalTrafficPolicy: Local
+
+---
+# ==========================================
+# GatewayClass 配置
+# ==========================================
+# GatewayClass 通过 parametersRef 引用 EnvoyProxy
+#
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: nginx-gatewayclass
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+
+  # 引用 EnvoyProxy 配置
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: nginx-proxy-config
+    namespace: metallb-system
+
+---
+# ==========================================
+# Gateway 配置
+# ==========================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: nginx-gateway
+  namespace: metallb-system
+
+spec:
+  # 使用上面定义的 GatewayClass
+  gatewayClassName: nginx-gatewayclass
+
+  # ==========================================
+  # 监听器配置
+  # ==========================================
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      hostname: nginx.example.com
+
+      # 允许的路由
+      allowedRoutes:
+        namespaces:
+          from: Same  # 只允许同命名空间的路由
+
+    # HTTPS 监听器示例（需要先创建 TLS 证书）
+    # - name: https
+    #   protocol: HTTPS
+    #   port: 443
+    #   hostname: nginx.example.com
+    #   tls:
+    #     mode: Terminate
+    #     certificateRefs:
+    #       - kind: Secret
+    #         name: nginx-tls-cert
+    #   allowedRoutes:
+    #     namespaces:
+    #       from: Same
+
+---
+# ==========================================
+# HTTPRoute 配置
+# ==========================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: nginx-route
+  namespace: metallb-system
+
+spec:
+  # 关联的 Gateway
+  parentRefs:
+    - name: nginx-gateway
+      sectionName: http
+
+  # 主机名匹配
+  hostnames:
+    - "nginx.example.com"
+
+  # 路由规则
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+
+      # 后端服务配置
+      backendRefs:
+        - name: nginx
+          port: 80
+          weight: 1
+
+---
+# ==========================================
+# 扩展示例：创建自定义 GatewayClass
+# ==========================================
+# 如果需要多个不同配置的 Gateway，可以创建多个 GatewayClass
+#
+# 示例：生产环境的 GatewayClass
+---
+# apiVersion: gateway.envoyproxy.io/v1alpha1
+# kind: EnvoyProxy
+# metadata:
+#   name: prod-proxy-config
+#   namespace: metallb-system
+# spec:
+#   logging:
+#     level:
+#       default: warn
+#   provider:
+#     type: Kubernetes
+#     kubernetes:
+#       envoyDeployment:
+#         replicas: 5  # 生产环境使用更多副本
+#         pod:
+#           nodeSelector:
+#             node-role.kubernetes.io/worker: ""
+#         container:
+#           resources:
+#             requests:
+#               cpu: "500m"
+#               memory: "512Mi"
+#             limits:
+#               cpu: "2000m"
+#               memory: "2Gi"
+#       envoyService:
+#         type: LoadBalancer
+#         annotations:
+#           metallb.io/address-pool: default-pool
+#
+# ---
+# apiVersion: gateway.networking.k8s.io/v1
+# kind: GatewayClass
+# metadata:
+#   name: prod-gatewayclass
+# spec:
+#   controllerName: gateway.envoyproxy.io/gatewayclass-controller
+#   parametersRef:
+#     group: gateway.envoyproxy.io
+#     kind: EnvoyProxy
+#     name: prod-proxy-config
+#     namespace: metallb-system
+#
+# ---
+# apiVersion: gateway.networking.k8s.io/v1
+# kind: Gateway
+# metadata:
+#   name: prod-gateway
+#   namespace: metallb-system
+# spec:
+#   gatewayClassName: prod-gatewayclass
+#   listeners:
+#     - name: http
+#       protocol: HTTP
+#       port: 80
+#       hostname: prod.example.com
+
+# ==========================================
+# 使用说明
+# ==========================================
+#
+# 1. 应用配置：
+#    kubectl apply -f examples/nginx-simple.yaml
+#
+# 2. 验证资源创建：
+#    kubectl get envoyproxy,gatewayclass,gateway,httproute -n metallb-system
+#
+# 3. 验证 Nginx 应用：
+#    kubectl get deployment,svc,pods -n metallb-system -l app=nginx
+#
+# 4. 查看数据平面 Deployment：
+#    kubectl get deployment -n metallb-system | grep envoy
+#
+# 5. 查看 Pod 分布：
+#    kubectl get pods -n metallb-system -o wide
+#
+# 6. 获取 Gateway 的 LoadBalancer IP：
+#    kubectl get svc -n metallb-system
+#    # 查找以 "envoy-" 开头且包含 "-nginx-gateway" 的 Service
+#
+# 7. 测试访问：
+#    GATEWAY_IP=$(kubectl get svc -n metallb-system -l gateway.envoyproxy.io/owning-gateway-name=nginx-gateway -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')
+#    curl -H "Host: nginx.example.com" http://$GATEWAY_IP/
+#
+# 8. 查看日志：
+#    # 控制平面日志
+#    kubectl logs -n metallb-system -l app.kubernetes.io/instance=envoy-gateway --tail=100 -f
+#
+#    # 数据平面日志
+#    kubectl logs -n metallb-system -l gateway.envoyproxy.io/owning-gateway-name=nginx-gateway --tail=100 -f
+#
+#    # Nginx 应用日志
+#    kubectl logs -n metallb-system -l app=nginx --tail=100 -f
+#
+# 9. 动态调整副本数：
+#    kubectl patch envoyproxy nginx-proxy-config -n metallb-system \
+#      --type='merge' -p='{"spec":{"provider":{"kubernetes":{"envoyDeployment":{"replicas":5}}}}}'
+#
+# 10. 查看关联关系：
+#     kubectl get gatewayclass nginx-gatewayclass -n metallb-system -o yaml | grep -A 5 parametersRef
+#     kubectl get envoyproxy nginx-proxy-config -n metallb-system -o yaml
+#
+# ==========================================
+# 架构说明
+# ==========================================
+#
+# Envoy Gateway 的正确使用方式：
+#
+# 1. EnvoyProxy 资源定义数据平面配置
+#    ↓
+# 2. GatewayClass 通过 parametersRef 引用 EnvoyProxy
+#    ↓
+# 3. Gateway 使用 GatewayClass
+#    ↓
+# 4. HTTPRoute 定义路由规则，关联到 Gateway
+#    ↓
+# 5. Envoy Gateway 自动创建 Deployment 和 Service
+#
+# 错误的方式（之前的配置）：
+# ❌ Gateway 直接引用 EnvoyProxy（不支持 infrastructure.envoyproxy 字段）
+#
+# 正确的方式：
+# ✅ GatewayClass 引用 EnvoyProxy，Gateway 使用 GatewayClass
+#
+

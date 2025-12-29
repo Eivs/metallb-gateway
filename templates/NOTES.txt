@@ -6,7 +6,7 @@
 
 📦 安装的组件:
   - MetalLB ({{ .Values.metallb.controller.image.tag }})
-  - Traefik ({{ .Values.traefik.image.tag }})
+  - Envoy Gateway
   - Gateway API CRDs
 
 🔧 获取 LoadBalancer IP:
@@ -32,7 +32,7 @@ MetalLB 已配置以下 IP 地址池:
 
 🌐 使用 Gateway API:
 
-Traefik GatewayClass 已安装，名称为: {{ .Release.Name }}-traefik
+Envoy Gateway GatewayClass 已安装，名称为: eg
 
 创建 Gateway 示例：
 
@@ -41,21 +41,15 @@ Traefik GatewayClass 已安装，名称为: {{ .Release.Name }}-traefik
   metadata:
     name: example-gateway
   spec:
-    gatewayClassName: {{ .Release.Name }}-traefik
+    gatewayClassName: eg
     listeners:
       - name: web
         port: 80
         protocol: HTTP
 
-📊 Traefik Dashboard:
+📊 Envoy Gateway Metrics:
 
-本地访问:
-  kubectl port-forward -n {{ include "metallb-gateway.namespace" . }} deployment/{{ .Release.Name }}-traefik 9000:9000
-  然后访问: http://localhost:9000/dashboard/
-
-通过 LoadBalancer 访问:
-  获取外部 IP: kubectl get svc -n {{ include "metallb-gateway.namespace" . }} {{ .Release.Name }}-traefik
-  访问: http://<EXTERNAL-IP>:9000/dashboard/
+Envoy Gateway 会自动暴露 Prometheus metrics 端口 19001。
 
 ⚙️ 配置文件:
 
@@ -73,7 +67,7 @@ Traefik GatewayClass 已安装，名称为: {{ .Release.Name }}-traefik
 📚 更多信息:
 
   - MetalLB 文档: https://metallb.universe.tf/
-  - Traefik 文档: https://doc.traefik.io/traefik/
+  - Envoy Gateway 文档: https://gateway.envoyproxy.io/
   - Gateway API 文档: https://gateway-api.sigs.k8s.io/
 
 {{- if .Values.metallb.enabled }}
@@ -85,7 +79,7 @@ MetalLB Speaker 正在运行。检查状态:
   kubectl logs -n {{ include "metallb-gateway.namespace" . }} deployment/{{ .Release.Name }}-metallb-controller
 {{- end }}
 
-{{- if .Values.traefik.enabled }}
+{{- if .Values.envoyGateway.enabled }}
 🚀 快速开始:
 
 1. 创建一个测试应用:
@@ -113,8 +107,8 @@ MetalLB Speaker 正在运行。检查状态:
 
 🌐 验证 Gateway API:
 
-1. 获取 Traefik Gateway 外部 IP:
-   export GATEWAY_IP=$(kubectl get svc -n {{ include "metallb-gateway.namespace" . }} {{ .Release.Name }}-traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+1. 获取 Envoy Gateway Service 外部 IP:
+   export GATEWAY_IP=$(kubectl get svc -n {{ include "metallb-gateway.namespace" . }} envoy-gateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
 2. 配置本地 hosts 文件 (可选):
    echo "${GATEWAY_IP} {{ .Values.whoami.gateway.host }}" | sudo tee -a /etc/hosts

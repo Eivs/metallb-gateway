@@ -1,24 +1,25 @@
 # MetalLB Gateway Helm Chart
 
-一个用于在 Kubernetes 集群上部署 MetalLB 和 Traefik Gateway 的 Helm Chart，支持完整的负载均衡和 ingress 功能，并提供离线安装支持。
+一个用于在 Kubernetes 集群上部署 MetalLB 和 Envoy Gateway 的 Helm Chart，支持完整的负载均衡和 ingress 功能，并提供离线安装支持。
 
 ## 功能特性
 
 - **MetalLB**: 为裸机 Kubernetes 集群提供 LoadBalancer 类型的服务
-- **Traefik**: 现代化的 HTTP 反向代理和负载均衡器
-- **Gateway API**: 支持 Kubernetes Gateway API 标准（v1.4.1）
+- **Envoy Gateway**: 基于 Envoy 代理的现代化 Kubernetes Gateway API 实现
+- **Gateway API**: 支持 Kubernetes Gateway API 标准
 - **Layer2 模式**: MetalLB 默认使用 Layer2 模式，无需额外路由配置
 - **离线安装**: 支持完全离线环境部署
 - **开箱即用**: 预配置合理的默认值
 
 ## 架构组件
 
-| 组件        | 版本    | 说明                            |
-| ----------- | ------- | ------------------------------- |
-| MetalLB     | v0.15.3 | 负载均衡器，提供 IP 地址管理    |
-| Traefik     | v3.6.5  | Gateway API 实现，HTTP 反向代理 |
-| FRR         | 10.4.1  | BGP 路由支持（可选）            |
-| Gateway API | v1.4.1  | Kubernetes Gateway API CRDs     |
+| 组件           | 版本     | 说明                              |
+| -------------- | -------- | --------------------------------- |
+| MetalLB        | v0.15.3  | 负载均衡器，提供 IP 地址管理      |
+| Envoy Gateway  | latest   | Gateway API 实现，Envoy 代理控制面 |
+| Envoy Proxy    | latest   | 高性能数据面代理                  |
+| FRR            | 10.4.1   | BGP 路由支持（可选）              |
+| Gateway API    | v1.4.1   | Kubernetes Gateway API CRDs       |
 
 ## 前置要求
 
@@ -65,7 +66,6 @@ helm upgrade --install metallb-gateway . -n metallb-system --create-namespace -f
 ```bash
 # 检查 pods 状态
 kubectl get pods -n metallb-system
-kubectl get pods -n traefik-system
 
 # 检查 MetalLB 组件
 kubectl get IPAddressPool
@@ -106,8 +106,8 @@ echo "访问: http://${WHOAMI_IP}/"
 #### 验证 Gateway API
 
 ```bash
-# 1. 获取 Traefik Gateway 外部 IP
-export GATEWAY_IP=$(kubectl get svc -n metallb-system metallb-gateway-traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+# 1. 获取 Envoy Gateway Service 外部 IP
+export GATEWAY_IP=$(kubectl get svc -n metallb-system envoy-gateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
 # 2. 通过 Gateway API 访问（使用 Host 头）
 curl -H "Host: whoami.local" http://${GATEWAY_IP}/
@@ -156,7 +156,7 @@ kind: Gateway
 metadata:
   name: my-gateway
 spec:
-  gatewayClassName: metallb-gateway-traefik
+  gatewayClassName: eg
   listeners:
     - name: web
       port: 80
@@ -223,39 +223,42 @@ metallb:
         source-address: 192.168.1.2
 ```
 
-### Traefik 配置
+### Envoy Gateway 配置
 
 #### 启用 HTTPS
 
-```yaml
-traefik:
-  gateway:
-    listeners:
-      websecure:
-        port: 443
-        protocol: HTTPS
-        mode: Terminate
+在 Gateway 资源中直接配置 TLS 证书：
 
-  ports:
-    websecure:
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: my-gateway
+spec:
+  gatewayClassName: eg
+  listeners:
+    - name: https
+      protocol: HTTPS
       port: 443
-      expose:
-        default: true
-      exposedPort: 443
-      protocol: TCP
+      hostname: example.com
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: example-tls-cert
 ```
 
-#### 使用 Let's Encrypt
+#### 配置 Envoy Proxy 参数
+
+通过 `values.yaml` 自定义 Envoy 行为：
 
 ```yaml
-traefik:
-  certificatesResolvers:
-    letsencrypt:
-      acme:
-        email: your-email@example.com
-        storage: /acme.json
-        httpChallenge:
-          entryPoint: web
+envoyGateway:
+  config:
+    envoyGateway:
+      logging:
+        level:
+          default: info
 ```
 
 ### 离线安装配置
@@ -275,7 +278,8 @@ global:
 docker save quay.io/metallb/controller:v0.15.3 -o metallb-controller.tar
 docker save quay.io/metallb/speaker:v0.15.3 -o metallb-speaker.tar
 docker save quay.io/frrouting/frr:10.4.1 -o frr.tar
-docker save traefik:v3.6.5 -o traefik.tar
+docker save envoyproxy/gateway-dev:latest -o envoy-gateway.tar
+docker save envoyproxy/envoy:distroless-v1.31.0 -o envoy.tar
 
 # 导入到离线仓库
 docker load -i metallb-controller.tar
@@ -284,27 +288,31 @@ docker push harbor.example.com/metallb/controller:v0.15.3
 # ... 其他镜像类似
 ```
 
-## 访问 Traefik Dashboard
+## Envoy Gateway 监控
 
-### 方式 1: Port Forward
+Envoy Gateway 会自动暴露 Prometheus metrics 端口 19001。
 
-```bash
-kubectl port-forward -n traefik-system deployment/metallb-gateway-traefik 9000:9000
-```
-
-访问: http://localhost:9000/dashboard/
-
-### 方式 2: 通过 LoadBalancer
+### 查看 Metrics
 
 ```bash
-# 获取 Traefik 外部 IP
-kubectl get svc -n traefik-system metallb-gateway-traefik
+# Port forward 到本地
+kubectl port-forward -n metallb-system deployment/envoy-gateway 19001:19001
 
-# 访问 Dashboard（注意：需要确保安全配置）
-curl http://<EXTERNAL-IP>:9000/dashboard/
+# 访问 metrics
+curl http://localhost:19001/metrics
 ```
 
-⚠️ **安全提示**: 默认情况下 Dashboard 是不安全的，仅用于开发/测试环境。生产环境请配置认证。
+### 配置 ServiceMonitor
+
+```yaml
+# 在 values.yaml 中启用
+envoyGateway:
+  deployment:
+    pod:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "19001"
+```
 
 ## 故障排查
 
@@ -334,7 +342,7 @@ kubectl get IPAddressPool
 kubectl get nodes -o wide
 ```
 
-### Traefik Gateway 无法访问
+### Envoy Gateway 无法访问
 
 ```bash
 # 检查 GatewayClass
@@ -344,8 +352,11 @@ kubectl get gatewayclass
 kubectl get gateway
 kubectl describe gateway <gateway-name>
 
-# 检查 Traefik 日志
-kubectl logs -n traefik-system deployment/metallb-gateway-traefik
+# 检查 Envoy Gateway 日志
+kubectl logs -n metallb-system deployment/envoy-gateway
+
+# 检查 Envoy Proxy 状态
+kubectl get pods -n metallb-system -l gateway.envoyproxy.io/owning-gateway-namespace=<namespace>
 ```
 
 ## 升级
@@ -366,7 +377,6 @@ helm uninstall metallb-gateway
 
 # 删除命名空间（可选）
 kubectl delete namespace metallb-system
-kubectl delete namespace traefik-system
 
 # 删除 Gateway API CRDs（如果需要）
 kubectl delete crd -l gateway.networking.k8s.io/bundle-version=v1.4.1
@@ -376,25 +386,25 @@ kubectl delete crd -l gateway.networking.k8s.io/bundle-version=v1.4.1
 
 ### 关键参数
 
-| 参数                     | 默认值         | 说明                |
-| ------------------------ | -------------- | ------------------- |
-| `global.imageRegistry`   | `""`           | 全局镜像仓库地址    |
-| `metallb.enabled`        | `true`         | 启用 MetalLB        |
-| `metallb.ipAddressPools` | 见 values.yaml | IP 地址池配置       |
-| `traefik.enabled`        | `true`         | 启用 Traefik        |
-| `gatewayAPI.enabled`     | `true`         | 启用 Gateway API    |
-| `gatewayAPI.installCRDs` | `false`        | 通过 Helm 安装 CRDs |
-| `whoami.enabled`         | `false`        | 启用示例应用        |
+| 参数                      | 默认值         | 说明                |
+| ------------------------- | -------------- | ------------------- |
+| `global.imageRegistry`    | `""`           | 全局镜像仓库地址    |
+| `metallb.enabled`         | `true`         | 启用 MetalLB        |
+| `metallb.ipAddressPools`  | 见 values.yaml | IP 地址池配置       |
+| `envoyGateway.enabled`    | `true`         | 启用 Envoy Gateway  |
+| `gatewayAPI.enabled`      | `true`         | 启用 Gateway API    |
+| `gatewayAPI.installCRDs`  | `false`        | 通过 Helm 安装 CRDs |
+| `whoami.enabled`          | `false`        | 启用示例应用        |
 
 ### Whoami 示例应用配置
 
-| 参数                     | 默认值            | 说明                  |
-| ------------------------ | ----------------- | --------------------- |
-| `whoami.enabled`         | `false`           | 启用示例应用          |
-| `whoami.service.type`    | `LoadBalancer`    | 服务类型              |
-| `whoami.deployment.replicas` | `2`          | 副本数                |
-| `whoami.gateway.enabled` | `true`            | 创建 Gateway 资源     |
-| `whoami.gateway.host`    | `whoami.local`    | Gateway 主机名        |
+| 参数                     | 默认值         | 说明              |
+| ------------------------ | -------------- | ----------------- |
+| `whoami.enabled`         | `false`        | 启用示例应用      |
+| `whoami.service.type`    | `LoadBalancer` | 服务类型          |
+| `whoami.deployment.replicas` | `2`       | 副本数            |
+| `whoami.gateway.enabled` | `true`         | 创建 Gateway 资源 |
+| `whoami.gateway.host`    | `whoami.local` | Gateway 主机名    |
 
 完整配置选项请查看 [values.yaml](./values.yaml)。
 
@@ -420,20 +430,40 @@ kubectl delete svc <service-name>
 
 **A**: MetalLB Speaker 会自动检测所有网卡。如果需要指定网卡，配置 `speaker.speakerMetricsContainer` 的 `--address-pool` 参数。
 
-### Q: 如何监控 MetalLB 和 Traefik？
+### Q: 如何监控 Envoy Gateway？
 
-**A**: 启用 Prometheus 监控：
+**A**: Envoy Gateway 自动暴露 metrics 端口 19001，可以配置 Prometheus 抓取：
 
 ```yaml
-metallb:
-  prometheus:
-    serviceMonitor:
-      enabled: true
-
-traefik:
-  serviceMonitor:
-    enabled: true
+envoyGateway:
+  deployment:
+    pod:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "19001"
 ```
+
+### Q: Envoy Gateway 与 Traefik 有什么区别？
+
+**A**:
+
+- **Envoy Gateway**: 基于云原生计算基金会（CNCF）毕业项目 Envoy，专注于云原生场景，性能优异，与 Gateway API 紧密集成
+- **Traefik**: 功能更全面，支持多种后端，配置灵活，但性能相对较低
+
+### Q: 如何配置 TLS 证书？
+
+**A**: Envoy Gateway 支持多种 TLS 配置方式：
+
+1. **使用 Kubernetes Secret**:
+```yaml
+tls:
+  mode: Terminate
+  certificateRefs:
+    - kind: Secret
+      name: tls-cert
+```
+
+2. **使用 Cert-Manager**: 推荐使用 Cert-Manager 自动管理证书
 
 ## 项目结构
 
@@ -443,7 +473,7 @@ metallb-gateway/
 ├── values.yaml             # 默认配置值
 ├── charts/                 # 依赖的 charts（离线安装）
 │   ├── metallb/
-│   └── traefik/
+│   └── gateway-helm/       # Envoy Gateway chart
 ├── crds/                   # Gateway API CRDs
 │   └── gateway-api-v1.4.1.yaml
 ├── templates/              # Helm 模板
@@ -451,13 +481,16 @@ metallb-gateway/
 │   ├── _helpers.tpl        # 模板助手
 │   ├── namespaces.yaml     # 命名空间创建
 │   ├── gateway-api/        # Gateway API 相关
-│   └── metallb/            # MetalLB 资源配置
+│   │   └── gatewayclass.yaml
+│   ├── metallb/            # MetalLB 资源配置
+│   └── whoami/             # 示例应用
 └── README.md               # 本文档
 ```
 
 ## 相关资源
 
 - [MetalLB 官方文档](https://metallb.universe.tf/)
-- [Traefik 官方文档](https://doc.traefik.io/traefik/)
+- [Envoy Gateway 官方文档](https://gateway.envoyproxy.io/)
 - [Gateway API 规范](https://gateway-api.sigs.k8s.io/)
 - [Helm 文档](https://helm.sh/docs/)
+- [Envoy Gateway GitHub](https://github.com/envoyproxy/gateway)

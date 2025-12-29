@@ -8,7 +8,7 @@ metadata:
     app: whoami
     app.kubernetes.io/part-of: metallb-gateway
 spec:
-  gatewayClassName: {{ .Release.Name }}-traefik
+  gatewayClassName: eg
   listeners:
   - name: web
     port: 80

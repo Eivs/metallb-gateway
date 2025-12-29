@@ -181,24 +181,199 @@ metallb:
             memory: 50Mi
 
 # ==========================================
+# Envoy Gateway 节点调度配置
+# ==========================================
+# Envoy Gateway 分为控制平面和数据平面
+#
+# 组件分配策略：
+# - envoy-gateway（控制平面）     → 控制平面节点
+# - envoy-xxx-gateway（数据平面）  → Worker 节点
+#
+# ==========================================
+
+envoyGateway:
+  # ==========================================
+  # 控制平面配置
+  # ==========================================
+  deployment:
+    # 副本数：建议 2-3 个，实现高可用
+    replicas: 2
+
+    envoyGateway:
+      # 资源配置（控制平面较轻量）
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"
+
+      # 节点选择器 - 调度到控制平面节点
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+
+      # 容忍控制平面节点的污点
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+
+      # 优先级
+      priorityClassName: system-cluster-critical
+
+      # Pod 反亲和性 - 分散到不同控制平面节点
+      affinity:
+        podAntiAffinity:
+          # 优先推荐：分散到不同节点
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - gateway-helm
+                    - key: app.kubernetes.io/instance
+                      operator: In
+                      values:
+                        - envoy-gateway
+                topologyKey: kubernetes.io/hostname
+
+  # ==========================================
+  # 数据平面（Envoy 代理实例）配置
+  # ==========================================
+  # 每个 Gateway 资源会创建独立的 Deployment
+  # 这里配置默认的调度策略
+
+  config:
+    envoyGateway:
+      gateway:
+        controllerName: gateway.envoyproxy.io/gatewayclass-controller
+
+      # Envoy Proxy 实例的资源配置
+      # 每个数据平面实例的默认资源限制
+      provider:
+        type: Kubernetes
+        kubernetes:
+          # Envoy 副本数配置（通过 Gateway 的注解或 EnvoyProxy 资源覆盖）
+          rateLimitDeployment:
+            # RateLimit 服务配置（如果启用）
+            replicas: 2
+
+  # ==========================================
+  # Service 配置
+  # ==========================================
+  service:
+    enabled: true
+    type: LoadBalancer
+
+    # 注入 MetalLB 地址池选择器
+    annotations:
+      metallb.io/address-pool: default-pool
+
+    # 节点选择器 - 只调度到 Worker 节点
+    # 注意：Service 的 externalTrafficPolicy 设置影响流量分发
+    # - Cluster: 流量可能经过 SNAT，丢失源 IP
+    # - Local: 保留源 IP，但只转发到本地节点的 Pod
+    #   externalTrafficPolicy: Local
+
+# ==========================================
+# Whoami 示例应用配置
+# ==========================================
+whoami:
+  enabled: true
+
+  # Deployment 配置
+  deployment:
+    replicas: 3  # 3 个副本，分散到不同 Worker 节点
+
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "20Mi"
+      limits:
+        cpu: "100m"
+        memory: "50Mi"
+
+    # 节点选择器 - 只调度到 Worker 节点
+    nodeSelector:
+      node-role.kubernetes.io/worker: ""  # 如果有 worker 标签
+
+    # 排除控制平面节点
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+
+    # Pod 反亲和性 - 分散到不同 Worker 节点
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - whoami
+              topologyKey: kubernetes.io/hostname
+
+  # Service 配置
+  service:
+    type: LoadBalancer
+    port: 80
+    targetPort: 80
+
+    # 使用 MetalLB 地址池
+    annotations:
+      metallb.io/address-pool: default-pool
+
+# ==========================================
 # 资源配置说明
 # ==========================================
 #
-# Controller（控制平面，默认 1 个副本）:
-#   每个副本:
-#     requests: 10m CPU, 50Mi 内存
-#     limits:   100m CPU, 100Mi 内存
+# 【控制平面组件】（3 个控制平面节点）
 #
-# Speaker + FRR（每个 Worker 节点）:
-#   speaker:      50m CPU, 100Mi 内存 -> 200m CPU, 300Mi 内存
-#   frr:         100m CPU, 200Mi 内存 -> 500m CPU, 500Mi 内存
-#   reloader:     10m CPU, 20Mi 内存  ->  50m CPU, 50Mi 内存
-#   frr-metrics:  10m CPU, 20Mi 内存  ->  50m CPU, 50Mi 内存
-#   init containers: 30m CPU, 60Mi 内存
+# 1. envoy-gateway（2 副本）:
+#    每副本: 100m CPU, 256Mi 内存 -> 500m CPU, 512Mi 内存
+#    总计:   200m CPU, 512Mi 内存 -> 1 core, 1Gi 内存
 #
-# 每个 Worker 节点总计:
-#   requests: ~200m CPU, ~400Mi 内存
-#   limits:   ~800m CPU, ~900Mi 内存
+# 2. metallb-controller（2 副本）:
+#    每副本: 10m CPU, 50Mi 内存 -> 100m CPU, 100Mi 内存
+#    总计:   20m CPU, 100Mi 内存 -> 200m CPU, 200Mi 内存
+#
+# 控制平面节点总计:
+#    requests: ~220m CPU, ~612Mi 内存
+#    limits:   ~1.2 core, ~1.2Gi 内存
+#
+# 【Worker 节点组件】（5 个 Worker 节点）
+#
+# 1. envoy-xxx-gateway（数据平面）:
+#    每实例: 200m CPU, 256Mi 内存 -> 1 core, 1Gi 内存
+#    建议部署 3-5 个实例，分散在不同节点
+#
+# 2. whoami 应用（3 副本）:
+#    每副本: 10m CPU, 20Mi 内存 -> 100m CPU, 50Mi 内存
+#    总计:   30m CPU, 60Mi 内存 -> 300m CPU, 150Mi 内存
+#
+# 3. metallb-speaker（DaemonSet，每个 Worker 节点）:
+#    每节点: ~200m CPU, ~400Mi 内存（含 FRR）
+#    5 节点总计: ~1 core, ~2Gi 内存
+#
+# Worker 节点总计（每个节点）:
+#    requests: ~310m CPU, ~676Mi 内存（假设 1 个 envoy + 部分 whoami）
+#    limits:   ~1.3 core, ~1.5Gi 内存
+#
+# 集群总计:
+#    控制平面: ~220m CPU, ~612Mi 内存
+#    Worker 节点: ~1.55 core, ~3.38Gi 内存
+#    总计: ~1.77 core, ~4Gi 内存
 #
 # ==========================================
 # 设置 Controller 副本数为 2（高可用）
