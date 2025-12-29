@@ -1,0 +1,260 @@
+# ==========================================
+# MetalLB 组件节点调度和资源配置
+# ==========================================
+# 此配置文件定义了 MetalLB 各组件的合理节点分配和资源限制
+#
+# 组件分配策略：
+# - Controller -> 控制平面节点（轻量级控制平面组件）
+# - Speaker -> Worker 节点（需要处理实际网络流量）
+# - FRR -> 跟随 Speaker（作为 Speaker 的容器运行）
+#
+# ==========================================
+
+metallb:
+  # ==========================================
+  # Controller 配置
+  # ==========================================
+  # Controller 是控制平面组件，负责：
+  # - IP 地址分配和管理
+  # - 配置下发
+  # - Webhook 服务
+  # 应该部署在控制平面节点上
+  controller:
+    enabled: true
+
+    # 资源配置
+    # Controller 资源消耗较低，主要用于处理 API 请求和配置管理
+    resources:
+      requests:
+        cpu: 10m
+        memory: 50Mi
+      limits:
+        cpu: 100m
+        memory: 100Mi
+
+    # 节点选择器 - 调度到控制平面节点
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
+
+    # 容忍控制平面节点的污点
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+
+    # 优先级（确保 Controller 优先调度）
+    priorityClassName: system-cluster-critical
+
+    # 反亲和性 - 确保多个副本分散在不同节点（当设置为多副本时生效）
+    affinity:
+      podAntiAffinity:
+        # 强制要求：不同节点
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - metallb
+                - key: app.kubernetes.io/component
+                  operator: In
+                  values:
+                    - controller
+            topologyKey: kubernetes.io/hostname
+        # 优先推荐：不同可用区（如果有 zone 标签）
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - metallb
+                  - key: app.kubernetes.io/component
+                    operator: In
+                    values:
+                      - controller
+              topologyKey: topology.kubernetes.io/zone
+
+  # ==========================================
+  # Speaker 配置
+  # ==========================================
+  # Speaker 是 DaemonSet，负责：
+  # - 网络协议广播（ARP/NDP 或 BGP）
+  # - 服务流量处理
+  # 必须运行在需要处理 LoadBalancer 流量的节点上
+  speaker:
+    enabled: true
+
+    # 容忍控制平面污点（改为 false 避免调度到控制平面）
+    tolerateMaster: false
+
+    # 资源配置
+    # Speaker 资源消耗取决于服务数量和路由表大小
+    resources:
+      requests:
+        cpu: 50m
+        memory: 100Mi
+      limits:
+        cpu: 200m
+        memory: 300Mi
+
+    # 节点选择器 - 排除控制平面节点，只调度到 Worker 节点
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
+      node-role.kubernetes.io/master: ""
+
+    # 不需要额外容忍度
+    tolerations: []
+
+    # 优先级
+    priorityClassName: system-node-critical
+
+    # FRR 配置（BGP 路由）
+    frr:
+      enabled: true
+
+      # FRR 容器资源配置
+      # FRR 处理 BGP 路由，资源消耗取决于路由表大小和 BGP 会话数量
+      resources:
+        requests:
+          cpu: 100m
+          memory: 200Mi
+        limits:
+          cpu: 500m
+          memory: 500Mi
+
+      # FRR 镜像配置
+      image:
+        repository: quay.io/frrouting/frr
+        tag: 10.4.1
+
+    # Reloader 容器资源配置
+    reloader:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 20Mi
+        limits:
+          cpu: 50m
+          memory: 50Mi
+
+    # FRR Metrics 容器资源配置
+    frrMetrics:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 20Mi
+        limits:
+          cpu: 50m
+          memory: 50Mi
+
+    # 初始化容器资源配置
+    initContainers:
+      cpFrrFiles:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 20Mi
+          limits:
+            cpu: 50m
+            memory: 50Mi
+      cpReloader:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 20Mi
+          limits:
+            cpu: 50m
+            memory: 50Mi
+      cpMetrics:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 20Mi
+          limits:
+            cpu: 50m
+            memory: 50Mi
+
+# ==========================================
+# 资源配置说明
+# ==========================================
+#
+# Controller（控制平面，默认 1 个副本）:
+#   每个副本:
+#     requests: 10m CPU, 50Mi 内存
+#     limits:   100m CPU, 100Mi 内存
+#
+# Speaker + FRR（每个 Worker 节点）:
+#   speaker:      50m CPU, 100Mi 内存 -> 200m CPU, 300Mi 内存
+#   frr:         100m CPU, 200Mi 内存 -> 500m CPU, 500Mi 内存
+#   reloader:     10m CPU, 20Mi 内存  ->  50m CPU, 50Mi 内存
+#   frr-metrics:  10m CPU, 20Mi 内存  ->  50m CPU, 50Mi 内存
+#   init containers: 30m CPU, 60Mi 内存
+#
+# 每个 Worker 节点总计:
+#   requests: ~200m CPU, ~400Mi 内存
+#   limits:   ~800m CPU, ~900Mi 内存
+#
+# ==========================================
+# 设置 Controller 副本数为 2（高可用）
+# ==========================================
+#
+# 由于官方 Helm chart 不支持 replicaCount 配置，使用以下方法之一：
+#
+# 方法1: 使用 kubectl scale（推荐，最简单）
+#   helm install metallb-gateway . -f values.yaml -f values-scheduling.yaml
+#   kubectl scale deployment metallb-controller -n metallb-system --replicas=2
+#
+# 方法2: 使用 kustomize patch
+#   创建 kustomization.yaml:
+#     apiVersion: kustomize.config.k8s.io/v1beta1
+#     kind: Kustomization
+#     resources:
+#       - https://github.com/metallb/metallb/charts/metallb/
+#     patches:
+#       - patch: |-
+#           apiVersion: apps/v1
+#           kind: Deployment
+#           metadata:
+#             name: metallb-controller
+#             namespace: metallb-system
+#           spec:
+#             replicas: 2
+#
+# 方法3: 使用 Helm post-renderer
+#   创建 renderer.sh:
+#     #!/bin/bash
+#     yq e '.spec.replicas = 2' -i /dev/stdin
+#
+#   安装时:
+#   helm install metallb-gateway . \
+#     -f values.yaml \
+#     -f values-scheduling.yaml \
+#     --post-renderer ./renderer.sh
+#
+# ==========================================
+# 使用说明
+# ==========================================
+#
+# 安装（使用方法1设置副本数）:
+#   helm install metallb-gateway . -f values.yaml -f values-scheduling.yaml
+#   kubectl scale deployment metallb-controller -n metallb-system --replicas=2
+#
+# 验证 Controller 副本数:
+#   kubectl get deployment -n metallb-system metallb-controller
+#
+# 验证节点分布:
+#   kubectl get pods -n metallb-system -o wide
+#
+# 查看 Controller 在哪些节点运行:
+#   kubectl get pods -n metallb-system -l app.kubernetes.io/component=controller -o wide
+#
+# 查看 Speaker 在哪些节点运行:
+#   kubectl get pods -n metallb-system -l app.kubernetes.io/component=speaker -o wide
+#
+# ==========================================
