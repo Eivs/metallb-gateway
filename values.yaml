@@ -1,19 +1,13 @@
 # ==========================================
-# MetalLB Gateway - 离线安装配置
+# MetalLB Gateway
 # ==========================================
 # 本 chart 使用官方 MetalLB 和 Traefik charts 作为依赖，提供完整的离线安装支持
-#
-# 安装前请先运行: helm dependency update
 # ==========================================
 
 # 全局配置
 global:
-  # 全局镜像仓库地址（用于离线安装）
   imageRegistry: ""
-
-  # 全局 imagePullSecrets（如果私有仓库需要认证）
   imagePullSecrets: []
-  # - name: regcred
 
 # ==========================================
 # 命名空间配置
@@ -47,6 +41,15 @@ metallb:
     image:
       repository: quay.io/metallb/controller
       tag: v0.15.3
+    tolerations: []
+    priorityClassName: system-cluster-critical
+    resources:
+      requests:
+        cpu: 10m
+        memory: 50Mi
+      limits:
+        cpu: 100m
+        memory: 100Mi
 
   # Speaker 镜像
   speaker:
@@ -54,13 +57,31 @@ metallb:
     image:
       repository: quay.io/metallb/speaker
       tag: v0.15.3
+    tolerateMaster: false
+    priorityClassName: system-node-critical
+    resources:
+      requests:
+        cpu: 50m
+        memory: 100Mi
+      limits:
+        cpu: 200m
+        memory: 300Mi
 
     # FRR 镜像（BGP 模式需要）
     frr:
-      enabled: true
+      enabled: false
       image:
         repository: quay.io/frrouting/frr
         tag: 10.4.1
+      tolerateMaster: false
+      priorityClassName: system-node-critical
+      resources:
+        requests:
+          cpu: 100m
+          memory: 200Mi
+        limits:
+          cpu: 500m
+          memory: 500Mi
 
   # ==========================================
   # MetalLB IP 地址池配置
@@ -102,6 +123,7 @@ metallb:
 # ==========================================
 traefik:
   enabled: true
+  namespaceOverride: ""
 
   # ==========================================
   # Traefik 镜像配置（v38.0.1）
@@ -115,7 +137,7 @@ traefik:
   # 部署配置
   deployment:
     enabled: true
-    replicas: 1
+    replicas: 2
 
   # ==========================================
   # Gateway API 支持
@@ -173,7 +195,7 @@ traefik:
       # healthcarePort: 8080
     # websecure:
     #   port: 443
-    #   expose: 
+    #   expose:
     #     default: true
     #   exposedPort: 443
     #   protocol: TCP
